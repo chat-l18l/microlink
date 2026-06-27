@@ -101,6 +101,141 @@ Belangrijk: dezelfde MapResponse staat op piekmoment in meerdere vormen in geheu
 
 Dit verklaart waarschijnlijk het hoge PSRAM-gebruik tijdens registratie en peer sync.
 
+### Velden die uit server-JSON worden gelezen
+
+Deze lijst is gebaseerd op `ml_coord.c`. Dit zijn de velden die nu met cJSON uit de Tailscale control-plane datastream worden gehaald.
+
+#### EarlyNoise / handshake JSON
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| `nodeKeyChallenge` | string / key payload | Challenge van de control-plane om bezit van de WireGuard private key te bewijzen | Wordt opgeslagen in `s_node_key_challenge`; later gebruikt voor `NodeKeyChallengeResponse` in RegisterRequest |
+
+#### RegisterResponse
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| `Node` | object | Self-node zoals door control-plane geregistreerd | Container voor eigen node-info |
+| `Node.Addresses` | array string | Tailscale IP-adressen van dit apparaat, meestal `100.x.y.z/32` of `100.x.y.z` | Eerste IPv4 wordt `ml->vpn_ip` |
+| `Node.HomeDERP` | number | DERP-regio die de server voor deze node kiest | Wordt `ml->derp_home_region` |
+| `Node.DERP` | string | Legacy DERP-veld, vaak `127.3.3.40:<region>` | Fallback voor `HomeDERP` |
+| `Node.Key` | string | Node public key volgens server, `nodekey:<hex>` | Alleen logging/verificatie tegen lokale WG pubkey |
+
+#### MapResponse self-node
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| `Node` | object | Self-node in MapResponse | Container voor eigen node-status |
+| `Node.Addresses` | array string | Eigen Tailscale IP-adressen | Zet `ml->vpn_ip` als die nog niet gezet is |
+| `Node.HomeDERP` | number | Actuele home DERP-regio | Zet `ml->derp_home_region` |
+| `Node.DERP` | string | Legacy DERP-veld | Fallback voor `HomeDERP` |
+| `Node.Key` | string | Eigen nodekey volgens server | Logging/verificatie |
+| `Node.KeyExpiry` | string | ISO-8601 expiry timestamp van node key | Wordt omgezet naar `ml->key_expiry_epoch` |
+| `Node.Expired` | bool | Of node key verlopen is | Zet `ml->key_expired` |
+
+#### Peer-lijsten en peer updates
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| `Peers` | array object | Volledige peer-lijst bij initiele MapResponse | Per peer een `ML_PEER_ADD` update naar `wg_mgr` |
+| `PeersChanged` | array object | Delta met gewijzigde/nieuwe peers | Zelfde verwerking als `Peers` |
+| `peers` | array object | Lowercase fallback | Zelfde verwerking als `Peers` |
+| `PeersRemoved` | array string | Verwijderde peers als nodekey strings | Per key een `ML_PEER_REMOVE` update |
+| `PeersChangedPatch` | object | Lightweight delta per nodekey | Per entry een `ML_PEER_UPDATE_ENDPOINT` update |
+
+Per peer-object worden deze velden gelezen:
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| `Name` | string | Hostname/FQDN van peer | Gekopieerd naar `update->hostname`; trailing dot wordt gestript |
+| `Key` | string | Peer WireGuard/node public key, `nodekey:<hex>` | Gedecodeerd naar `update->public_key` |
+| `DiscoKey` | string | Peer DISCO public key, `discokey:<hex>` | Gedecodeerd naar `update->disco_key` |
+| `Addresses` | array string | Peer Tailscale IP-adressen | Eerste IPv4 wordt `update->vpn_ip` |
+| `HomeDERP` | number | Peer home DERP-regio | Wordt `update->derp_region` |
+| `DERP` | string | Legacy peer DERP-regio | Fallback voor `HomeDERP`, parse `127.3.3.40:<region>` |
+| `Endpoints` | array string | Peer direct UDP endpoints, `IPv4:port` | Max `ML_MAX_ENDPOINTS` IPv4 endpoints naar `update->endpoints` |
+
+Per `PeersChangedPatch` entry worden deze velden gelezen:
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| object key | string | Nodekey van de peer waarop de patch slaat | Gedecodeerd naar `update->public_key` |
+| `DERPRegion` | number | Nieuwe DERP-regio in patchvorm | Wordt `update->derp_region` |
+| `DERP` | string | Legacy DERP-regio in patchvorm | Fallback voor `DERPRegion` |
+| `Endpoints` | array string | Nieuwe endpoint-lijst | Wordt `update->endpoints` |
+
+#### DERPMap
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| `DERPMap` | object | Volledige DERP-regio configuratie | Container voor DERP discovery |
+| `DERPMap.Regions` | object/array van regio objecten | Regio's die DERP/STUN nodes bevatten | Max `ML_MAX_DERP_REGIONS` worden opgeslagen |
+| `RegionID` | number | Numerieke DERP-regio ID | Wordt `ml_derp_region_t.region_id` |
+| `RegionCode` | string | Korte regio-code, bv. `dfw` | Wordt `ml_derp_region_t.code` |
+| `Avoid` | bool | Of regio vermeden moet worden | Wordt `ml_derp_region_t.avoid` |
+| `Nodes` | array object | DERP/STUN nodes binnen regio | Max `ML_MAX_DERP_NODES` worden opgeslagen |
+| `HostName` | string | Hostname van DERP node | Wordt `ml_derp_node_t.hostname` |
+| `IPv4` | string | IPv4-adres van node | Wordt `ml_derp_node_t.ipv4` |
+| `IPv6` | string | IPv6-adres van node | Wordt `ml_derp_node_t.ipv6` |
+| `STUNPort` | number | STUN-poort, default 3478 als leeg | Wordt `ml_derp_node_t.stun_port` |
+| `DERPPort` | number | DERP/TLS-poort, default 443 als leeg | Wordt `ml_derp_node_t.derp_port` |
+| `STUNOnly` | bool | Node is alleen STUN, geen DERP relay | Wordt `ml_derp_node_t.stun_only` |
+
+#### Long-poll MapResponse updates
+
+Long-poll gebruikt dezelfde parser voor peer updates, maar leest daarnaast alleen:
+
+| JSON-pad | Type | Betekenis | Gebruik in code |
+|---|---|---|---|
+| `Node.Addresses` | array string | Mogelijk bijgewerkt eigen VPN IP | Update `ml->vpn_ip` als het adres verandert |
+| `PeersChanged` / `PeersRemoved` / `PeersChangedPatch` | array/object | Incremental peer updates | Zelfde verwerking als initiele MapResponse |
+
+### Streaming Parser Veldplan
+
+Als we cJSON voor MapResponse willen vervangen, hoeft de streaming parser niet elk Tailscale veld te begrijpen. Hij moet alleen events genereren voor de velden die MicroLink echt gebruikt.
+
+Aanbevolen parser-events:
+
+| Event | Wordt getriggerd door | Minimale output |
+|---|---|---|
+| `self_address` | `Node.Addresses[0]` | IPv4 `uint32_t` |
+| `self_home_derp` | `Node.HomeDERP` of legacy `Node.DERP` | `uint16_t region` |
+| `self_key_expiry` | `Node.KeyExpiry` | epoch seconds of originele string voor latere parse |
+| `self_expired` | `Node.Expired` | bool |
+| `peer_begin` | object in `Peers`, `PeersChanged` of lowercase `peers` | reset tijdelijke `ml_peer_update_t` |
+| `peer_name` | `Name` | hostname string, max 63 chars |
+| `peer_key` | `Key` | 32-byte public key |
+| `peer_disco_key` | `DiscoKey` | 32-byte disco key |
+| `peer_address` | eerste `Addresses[]` IPv4 | `uint32_t vpn_ip` |
+| `peer_home_derp` | `HomeDERP` of legacy `DERP` | `uint16_t region` |
+| `peer_endpoint` | elke IPv4 `Endpoints[]` | max `ML_MAX_ENDPOINTS` `{ip, port}` |
+| `peer_end` | einde peer object | queue `ML_PEER_ADD` als key/IP geldig zijn |
+| `peer_removed` | elk item in `PeersRemoved[]` | queue `ML_PEER_REMOVE` met public key |
+| `patch_begin` | key/object in `PeersChangedPatch` | nodekey + reset patch update |
+| `patch_derp` | `DERPRegion` of legacy `DERP` | region |
+| `patch_endpoint` | patch `Endpoints[]` | endpoint list |
+| `patch_end` | einde patch object | queue `ML_PEER_UPDATE_ENDPOINT` |
+| `derp_region_begin` | item in `DERPMap.Regions` | reset regio struct |
+| `derp_region_field` | `RegionID`, `RegionCode`, `Avoid` | regio metadata |
+| `derp_node` | item in `Nodes[]` | hostname, IPv4, IPv6, STUNPort, DERPPort, STUNOnly |
+| `derp_region_end` | einde regio object | opslaan in `ml->derp_regions` |
+
+Minimale implementatievolgorde voor streaming parsing:
+
+1. Start met initiele `MapResponse` zonder `DERPMap`: parse `Node`, `Peers`, `PeersChanged`, `PeersRemoved`, `PeersChangedPatch`.
+2. Voeg daarna `DERPMap` toe, omdat die relatief groot kan zijn maar minder vaak verandert.
+3. Houd `RegisterResponse` voorlopig op cJSON; die is klein en geen geheugenhotspot.
+4. Houd request-JSON voorlopig op cJSON of vervang later door `snprintf`/kleine stringbuilder; request bodies zijn klein.
+5. Zorg dat de parser objecten kan overslaan die niet in bovenstaande veldlijst staan, zonder allocaties.
+
+Belangrijke randvoorwaarden:
+
+1. JSON kan vooraf een 4-byte lengteprefix hebben; bestaande code zoekt/skipt die al.
+2. HTTP/2 DATA kan over meerdere Noise frames verdeeld zijn; streaming JSON parsing moet dus bytes incrementeel kunnen voeren.
+3. `PeersChangedPatch` is een object waarvan de property-name zelf de nodekey is; de parser moet dus object keys als data kunnen gebruiken.
+4. `DERPMap.Regions` kan als object met regio-ID keys binnenkomen; de parser moet niet alleen arrays ondersteunen maar ook object children kunnen itereren.
+5. Onbekende velden moeten goedkoop geskipt worden, want Tailscale voegt regelmatig velden toe.
+
 ### HTTP Config Server JSON
 
 `ml_config_httpd.c` gebruikt cJSON voor REST endpoints:
