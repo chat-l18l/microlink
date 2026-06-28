@@ -36,6 +36,15 @@
 
 static const char *TAG = "ml_coord";
 
+static void log_map_heap(const char *stage) {
+    ESP_LOGI(TAG, "[MAP_HEAP] %s: int_free=%lu int_min=%lu psram_free=%lu psram_min=%lu",
+             stage,
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+}
+
 /* Effective control plane host: NVS override or compiled default */
 #define CTRL_HOST(ml) ((ml)->ctrl_host[0] ? (ml)->ctrl_host : ML_CTRL_HOST)
 
@@ -1390,13 +1399,25 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
      * This is critical because a single H2 frame can span multiple Noise frames
      * (v1 does the same with h2_buffer).
      * Smart timeout: extend to 60s for large tailnets (300+ peers = 240KB+). */
+    log_map_heap("before MapResponse buffers");
+
     uint8_t *h2_recv = ml_psram_malloc(ML_H2_BUFFER_SIZE);  /* 512KB for 300+ peer tailnets */
     if (!h2_recv) return -1;
     size_t h2_total = 0;
+    log_map_heap("after h2_recv alloc");
 
     uint8_t *resp_buf = ml_psram_malloc(ML_JSON_BUFFER_SIZE);
     if (!resp_buf) { free(h2_recv); return -1; }
     size_t json_total = 0;
+    log_map_heap("after resp_buf alloc");
+
+    uint8_t *frame_buf = ml_psram_malloc(65536);
+    if (!frame_buf) {
+        free(resp_buf);
+        free(h2_recv);
+        return -1;
+    }
+    log_map_heap("after frame_buf alloc");
 
     /* Set extended recv timeout for large MapResponse (60 seconds) */
     struct timeval rcv_tv = { .tv_sec = 60, .tv_usec = 0 };
@@ -1412,12 +1433,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
      * (60s) before proceeding, which dominates connection time on cellular. */
     bool got_end_stream = false;
     for (int read_count = 0; read_count < 200; read_count++) {
-        uint8_t *frame_buf = ml_psram_malloc(65536);
-        if (!frame_buf) break;
-
         int frame_len = noise_recv(ml, noise, frame_buf, 65536);
         if (frame_len <= 0) {
-            free(frame_buf);
             break;
         }
 
@@ -1428,10 +1445,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             window_consumed += frame_len;
         } else {
             ESP_LOGW(TAG, "H2 buffer full at %dKB, truncating", (int)(h2_total / 1024));
-            free(frame_buf);
             break;
         }
-        free(frame_buf);
 
         /* Scan newly accumulated data for H2 END_STREAM flag.
          * H2 frame header: 3 bytes length + 1 byte type + 1 byte flags + 4 bytes stream ID.
@@ -1481,6 +1496,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             window_consumed = 0;
         }
     }
+    free(frame_buf);
+    log_map_heap("after frame receive");
 
     /* Restore normal recv timeout (5 seconds for long-poll) */
     rcv_tv.tv_sec = 5;
@@ -1520,6 +1537,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         fpos += f_len;
     }
     free(h2_recv);
+    log_map_heap("after h2_recv free");
 
     /* Send connection-level WINDOW_UPDATE to replenish HTTP/2 flow control.
      * Stream 3 is already closed (END_STREAM received), so only update stream 0.
@@ -1538,6 +1556,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
 
     ESP_LOGI(TAG, "MapResponse JSON: %d bytes", (int)json_total);
+    log_map_heap("before cJSON parse");
 
     /* Hex dump first 32 bytes for debugging prefix issues */
     {
@@ -1576,6 +1595,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
 
     cJSON *map_json = cJSON_Parse(parse_start);
     parse_start[parse_len] = saved;
+    log_map_heap("after cJSON parse");
 
     if (!map_json) {
         const char *err = cJSON_GetErrorPtr();
@@ -1777,7 +1797,9 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
 
     cJSON_Delete(map_json);
+    log_map_heap("after cJSON delete");
     free(resp_buf);
+    log_map_heap("after resp_buf free");
 
     int64_t t_map_done = esp_timer_get_time();
     ESP_LOGI(TAG, "[TIMING] MapResponse recv+parse: %lld ms (total map: %lld ms, %dKB)",

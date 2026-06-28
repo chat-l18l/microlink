@@ -333,6 +333,28 @@ Aanbevolen volgorde:
 5. Als datapad belangrijk wordt: packet pool voor UDP/DERP in plaats van malloc/free per packet.
 6. Als config server met grote allowlist wordt gebruikt: verplaats `ml_config_ctx_t` of de allowlist naar PSRAM.
 
+## Werknotitie 2026-06-28
+
+Stap 1 en 2 zijn uitgevoerd in `components/microlink/src/ml_coord.c`:
+
+1. Tijdelijke `[MAP_HEAP]` meetlogs toegevoegd rond `do_fetch_peers()` voor interne heap en PSRAM, inclusief minimum-watermarks.
+2. De 64 KB Noise `frame_buf` in `do_fetch_peers()` wordt nu eenmalig buiten de receive-loop gealloceerd en hergebruikt.
+
+Deze instrumentatie is bewust expliciet gelogd zodat de MapResponse-piek op echte ESP32-hardware gemeten kan worden. Als de metingen klaar zijn, deze logs verwijderen of achter een debug/Kconfig-vlag zetten, bijvoorbeeld `CONFIG_ML_COORD_HEAP_TRACE` of een runtime debug flag.
+
+Belangrijke meetpunten in de logs:
+
+| Stage | Wat het laat zien |
+|---|---|
+| `before MapResponse buffers` | Baseline voor de grote allocaties |
+| `after h2_recv alloc` | Kosten van `ML_H2_BUFFER_SIZE` |
+| `after resp_buf alloc` | Kosten van `ML_JSON_BUFFER_SIZE` |
+| `after frame_buf alloc` | Vaste 64 KB Noise frame buffer |
+| `before cJSON parse` / `after cJSON parse` | Extra cJSON DOM-gebruik |
+| `after cJSON delete` / `after resp_buf free` | Hoeveel geheugen echt terugkomt |
+
+Volgende stap: de meetresultaten gebruiken om te bepalen of eerst dubbele buffering (`h2_recv` -> `resp_buf`) wordt verwijderd, of dat MapResponse parsing direct cJSON-vrij/token-based gemaakt moet worden.
+
 ## Eerste Hypothese
 
 De grootste winst zit niet in kleine settings JSON of NVS, maar in de initiele Tailscale MapResponse:
