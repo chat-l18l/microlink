@@ -7,7 +7,7 @@ ESP32-P4 heeft geen ingebouwde WiFi. Dit example gebruikt de interne ESP32-P4 EM
 Dit is nog een skeleton voor MicroLink op Ethernet, maar de eerste hardwareconfig staat erin:
 
 1. `main/ethernet_start()` configureert `ESP_NETIF_DEFAULT_ETH()`, interne EMAC, RMII en IP101.
-2. Static IP staat op `192.168.4.1/24`, gateway `192.168.4.1`.
+2. Ethernet gebruikt DHCP zodat IP, gateway en DNS van de uplink komen.
 3. User LED op GPIO2 wordt gebruikt als link/IP indicatie.
 4. Na Ethernet `GOT_IP` start het example MicroLink en een UDP echo socket op poort `9000`.
 
@@ -38,9 +38,7 @@ Ethernet instellingen in code:
 | PHY address | `1` |
 | RMII clock mode | external clock into ESP32-P4 |
 | REF_CLK GPIO | `GPIO50` |
-| Static IP | `192.168.4.1` |
-| Netmask | `255.255.255.0` |
-| Gateway | `192.168.4.1` |
+| IPv4 config | DHCP client via `ESP_NETIF_DEFAULT_ETH()` |
 | MicroLink UDP demo port | `9000` |
 
 De relevante code staat in `ethernet_start()`:
@@ -51,7 +49,7 @@ De relevante code staat in `ethernet_start()`:
 4. `emac_cfg.interface = EMAC_DATA_INTERFACE_RMII` kiest RMII.
 5. `emac_cfg.clock_config.rmii.clock_mode = EMAC_CLK_EXT_IN` verwacht REF_CLK van de PHY.
 6. `esp_eth_phy_new_ip101()` selecteert de IP101 PHY driver.
-7. `apply_static_ip()` stopt DHCP client en zet de static IPv4 config.
+7. De default Ethernet netif start de DHCP client; `IP_EVENT_ETH_GOT_IP` start daarna MicroLink.
 
 Als je een ander ESP32-P4 board gebruikt, pas eerst deze defines aan in `main.c`:
 
@@ -63,14 +61,13 @@ Als je een ander ESP32-P4 board gebruikt, pas eerst deze defines aan in `main.c`
 #define ETH_PHY_ADDR         1
 ```
 
-Gebruik DHCP in plaats van static IP door `apply_static_ip(eth_netif);` te verwijderen of conditioneel te maken. Voor Tailscale control-plane/DERP is een route naar internet nodig; de huidige static-IP configuratie is vooral handig voor back-to-back of testopstellingen.
+Voor Tailscale control-plane/DERP is een route naar internet nodig. Daarom gebruikt dit example standaard DHCP in plaats van een back-to-back static IP.
 
 ## Nog Te Doen
 
 Open punten:
 
-1. Check of deze static-IP setup past bij de uiteindelijke Tailscale route naar controlplane/DERP. Voor internet uplink is meestal DHCP of een echte gateway nodig.
-2. Test of de ESP-IDF versie voor ESP32-P4 dezelfde EMAC/IP101 API namen gebruikt.
-3. Maak MicroLink component WiFi-optioneel voor een zuivere ESP32-P4 build.
+1. Test of de ESP-IDF versie voor ESP32-P4 dezelfde EMAC/IP101 API namen gebruikt.
+2. Controleer op hardware of DHCP, gateway en DNS correct binnenkomen via `IP_EVENT_ETH_GOT_IP`.
 
 Belangrijke vervolgstap: de MicroLink component zelf heeft nu nog `esp_wifi` als dependency. Voor een zuivere ESP32-P4 build moet die WiFi dependency waarschijnlijk optioneel gemaakt worden.

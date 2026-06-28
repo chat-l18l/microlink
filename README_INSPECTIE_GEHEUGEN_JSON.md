@@ -355,6 +355,51 @@ Belangrijke meetpunten in de logs:
 
 Volgende stap: de meetresultaten gebruiken om te bepalen of eerst dubbele buffering (`h2_recv` -> `resp_buf`) wordt verwijderd, of dat MapResponse parsing direct cJSON-vrij/token-based gemaakt moet worden.
 
+## Werknotitie 2026-06-28: DISCO/Probe Verkeer Verminderen
+
+Na succesvolle ESP32-P4 Ethernet test viel op dat er veel netwerkverkeer en logging is rond DISCO, CallMeMaybe, STUN en WireGuard periodic processing. Voor embedded use-cases is dit waarschijnlijk te agressief, vooral als het device maar met een paar vaste peers hoeft te praten.
+
+Voorbeelden uit runtime logs:
+
+- `DISCO PING` / `DISCO PONG` via direct UDP en DERP.
+- `CallMeMaybe` heen en terug na endpoint discovery.
+- Periodieke `CMM probe` naar peer endpoints.
+- `STUN probe` / periodic re-probe.
+- HTTP/2 control-plane `PING` elke 5 seconden.
+- Veel `ESP_LOGI` in hot paths (`UDP RX`, `DISCO RX`, `DERP TX`, `wireguardif_periodic`).
+
+Bestaand instelbaar:
+
+| Setting | Waar | Default | Opmerking |
+|---|---|---:|---|
+| `disco_heartbeat_ms` | config struct / web UI / NVS | 3000 ms | Wordt gebruikt voor periodieke DISCO heartbeat in `ml_wg_mgr.c` |
+
+Hardcoded timing die later configureerbaar gemaakt kan worden:
+
+| Constant | Huidig | Betekenis |
+|---|---:|---|
+| `ML_DISCO_PING_INTERVAL_MS` | 5000 ms | Minimum interval tussen DISCO pings naar peer |
+| `ML_DISCO_HEARTBEAT_MS` | 3000 ms | Default heartbeat als config leeg is |
+| `ML_DISCO_TRUST_DURATION_MS` | 15000 ms | Hoe lang direct path vertrouwd blijft na PONG |
+| `ML_DISCO_UPGRADE_INTERVAL_MS` | 15000 ms | Interval voor direct-path upgrade probes |
+| `ML_DISCO_SESSION_ACTIVE_MS` | 45000 ms | Recente sessie-activiteit window |
+| `ML_STUN_RESTUN_INTERVAL_MS` | 23000 ms | Periodieke STUN re-probe |
+
+Aanpak voor later:
+
+1. Zet voor testen eerst `disco_heartbeat_ms` via web UI/NVS naar `30000` of `60000` ms.
+2. Verlaag hot-path logging van `ESP_LOGI` naar `ESP_LOGD`, of guard met bestaande `debug_flags`.
+3. Maak DISCO/STUN timing Kconfig/runtime configureerbaar in plaats van hardcoded defines.
+4. Voeg eventueel `CONFIG_ML_LOW_TRAFFIC_MODE` toe met embedded-vriendelijke defaults:
+   - DISCO heartbeat: 30000 ms
+   - STUN re-probe: 120000 ms
+   - DISCO upgrade probe: 60000 ms
+   - hot-path UDP/DISCO/DERP logs uit tenzij debug flag aan staat
+5. Probe niet alle peers periodiek. Beperk tot priority peer, allowlist, peers met recente activiteit, of peers waarvoor een direct path nuttig is.
+6. Houd control-plane H2 PING voorzichtig: server idle timeout lijkt rond 20s te liggen, dus die 5s ping pas wijzigen na meting.
+
+Belangrijke nuance: het hoge logvolume betekent niet een-op-een hetzelfde als netwerkvolume. Een deel van de waargenomen drukte komt doordat normale protocol-events op `INFO` worden gelogd.
+
 ## Eerste Hypothese
 
 De grootste winst zit niet in kleine settings JSON of NVS, maar in de initiele Tailscale MapResponse:

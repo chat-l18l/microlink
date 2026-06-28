@@ -24,7 +24,6 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
-#include "lwip/ip4_addr.h"
 
 #include "microlink.h"
 #include "microlink_internal.h"  /* For task handle access (diagnostic) */
@@ -44,11 +43,6 @@ static const char *TAG = "ts_basic_p4";
 #define ETH_PHY_RST_GPIO     GPIO_NUM_51
 #define ETH_REF_CLK_GPIO     GPIO_NUM_50
 #define ETH_PHY_ADDR         1
-
-/* Static-IP configuration (back-to-back link, no DHCP server). */
-#define ETH_STATIC_IP        "192.168.4.1"
-#define ETH_STATIC_NETMASK   "255.255.255.0"
-#define ETH_STATIC_GATEWAY   "192.168.4.1"
 
 static EventGroupHandle_t net_event_group;
 #define ETH_GOT_IP_BIT BIT0
@@ -179,21 +173,6 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     xEventGroupSetBits(net_event_group, ETH_GOT_IP_BIT);
 }
 
-static void apply_static_ip(esp_netif_t *netif) {
-    esp_err_t err = esp_netif_dhcpc_stop(netif);
-    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
-        ESP_LOGW(TAG, "dhcpc stop: %s", esp_err_to_name(err));
-    }
-
-    esp_netif_ip_info_t ip = {0};
-    IP4_ADDR(&ip.ip, 192, 168, 4, 1);
-    IP4_ADDR(&ip.netmask, 255, 255, 255, 0);
-    IP4_ADDR(&ip.gw, 192, 168, 4, 1);
-    ESP_ERROR_CHECK(esp_netif_set_ip_info(netif, &ip));
-    ESP_LOGI(TAG, "static IP %s/%s gw=%s",
-             ETH_STATIC_IP, ETH_STATIC_NETMASK, ETH_STATIC_GATEWAY);
-}
-
 static esp_err_t ethernet_start(void) {
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID,
                                                eth_event_handler, NULL));
@@ -244,7 +223,7 @@ static esp_err_t ethernet_start(void) {
     ESP_LOGI(TAG, "step: esp_netif_attach");
     LOG_STEP(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
 
-    apply_static_ip(eth_netif);
+    ESP_LOGI(TAG, "Ethernet netif uses DHCP client");
 
     ESP_LOGI(TAG, "step: esp_eth_start");
     LOG_STEP(esp_eth_start(eth_handle));
