@@ -11,7 +11,10 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_mac.h"
+#include "soc/soc_caps.h"
+#if SOC_WIFI_SUPPORTED
 #include "esp_wifi.h"
+#endif
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "cJSON.h"
@@ -232,7 +235,11 @@ microlink_t *microlink_init(const microlink_config_t *config) {
             if (nvs_prefix) {
                 /* Device name = prefix + MAC suffix (e.g. "sensor-a1b2c3") */
                 uint8_t mac[6];
+#if SOC_WIFI_SUPPORTED
                 esp_read_mac(mac, ESP_MAC_WIFI_STA);
+#else
+                esp_read_mac(mac, ESP_MAC_BASE);
+#endif
                 snprintf(ml->nvs_device_name, sizeof(ml->nvs_device_name),
                          "%s-%02x%02x%02x", nvs_prefix, mac[3], mac[4], mac[5]);
                 ml->config.device_name = ml->nvs_device_name;
@@ -307,11 +314,17 @@ esp_err_t microlink_start(microlink_t *ml) {
     ml->state = ML_STATE_WIFI_WAIT;
 
     /* Set WiFi TX power if configured */
+#if SOC_WIFI_SUPPORTED
     if (ml->config.wifi_tx_power_dbm > 0) {
         int8_t power_quarter_dbm = ml->config.wifi_tx_power_dbm * 4;
         esp_wifi_set_max_tx_power(power_quarter_dbm);
         ESP_LOGI(TAG, "WiFi TX power set to %d dBm", ml->config.wifi_tx_power_dbm);
     }
+#else
+    if (ml->config.wifi_tx_power_dbm > 0) {
+        ESP_LOGD(TAG, "Ignoring WiFi TX power on target without WiFi");
+    }
+#endif
 
 #ifdef CONFIG_ML_ZERO_COPY_WG
     /* Zero-copy mode: raw lwIP PCB replaces BSD socket for DISCO/WG UDP.
@@ -670,7 +683,11 @@ const char *microlink_default_device_name(void) {
     static char name[48] = {0};
     if (name[0] == 0) {
         uint8_t mac[6];
+#if SOC_WIFI_SUPPORTED
         esp_read_mac(mac, ESP_MAC_WIFI_STA);
+#else
+        esp_read_mac(mac, ESP_MAC_BASE);
+#endif
 
         /* Use ML_DEVICE_NAME as prefix if configured, otherwise "esp32" */
         const char *prefix = CONFIG_ML_DEVICE_NAME;

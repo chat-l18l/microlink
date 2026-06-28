@@ -20,7 +20,10 @@
 #include "esp_http_server.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "soc/soc_caps.h"
+#if SOC_WIFI_SUPPORTED
 #include "esp_wifi.h"
+#endif
 #include "esp_timer.h"
 #include "driver/temperature_sensor.h"
 #include "nvs_flash.h"
@@ -710,6 +713,7 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
     }
 
     /* WiFi RSSI */
+#if SOC_WIFI_SUPPORTED
     int rssi = 0;
     if (esp_wifi_sta_get_rssi(&rssi) == ESP_OK) {
         cJSON_AddNumberToObject(json, "rssi", rssi);
@@ -723,6 +727,11 @@ static esp_err_t handler_monitor(httpd_req_t *req) {
         cJSON_AddNumberToObject(json, "wifi_channel", ap_info.primary);
         cJSON_AddStringToObject(json, "wifi_ssid", (char *)ap_info.ssid);
     }
+#else
+    cJSON_AddNullToObject(json, "rssi");
+    cJSON_AddNullToObject(json, "wifi_channel");
+    cJSON_AddStringToObject(json, "wifi_ssid", "");
+#endif
 
     /* Uptime */
     uint64_t uptime_ms = esp_timer_get_time() / 1000;
