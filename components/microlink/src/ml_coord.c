@@ -22,6 +22,7 @@
  */
 
 #include "microlink_internal.h"
+#include "ml_map_parser.h"
 #include "x25519.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -44,6 +45,25 @@ static void log_map_heap(const char *stage) {
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
+
+#ifdef CONFIG_ML_DUMP_MAP_RESPONSE_JSON
+static void log_map_json_dump(const char *json, size_t len) {
+    const size_t chunk_size = 512;
+    char chunk[513];
+    size_t chunks = (len + chunk_size - 1) / chunk_size;
+
+    ESP_LOGW(TAG, "[MAP_JSON_DUMP_BEGIN] len=%u chunks=%u", (unsigned)len, (unsigned)chunks);
+    for (size_t offset = 0, idx = 0; offset < len; offset += chunk_size, idx++) {
+        size_t n = len - offset;
+        if (n > chunk_size) n = chunk_size;
+        memcpy(chunk, json + offset, n);
+        chunk[n] = '\0';
+        ESP_LOGW(TAG, "[MAP_JSON_DUMP %u/%u offset=%u len=%u] %s",
+                 (unsigned)(idx + 1), (unsigned)chunks, (unsigned)offset, (unsigned)n, chunk);
+    }
+    ESP_LOGW(TAG, "[MAP_JSON_DUMP_END] len=%u chunks=%u", (unsigned)len, (unsigned)chunks);
+}
+#endif
 
 /* Effective control plane host: NVS override or compiled default */
 #define CTRL_HOST(ml) ((ml)->ctrl_host[0] ? (ml)->ctrl_host : ML_CTRL_HOST)
@@ -1589,6 +1609,66 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         ESP_LOGW(TAG, "No '{' found in first 8 bytes of MapResponse!");
     }
 
+#ifdef CONFIG_ML_DUMP_MAP_RESPONSE_JSON
+    if (json_offset >= 0) {
+        log_map_json_dump(parse_start, parse_len);
+    }
+#endif
+
+#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+    bool map_stream_applied = false;
+    {
+        ml_map_parse_stats_t stats;
+        bool ok = ml_map_parse_response_apply_peers(ml, parse_start, parse_len, &stats);
+        if (ok) {
+            map_stream_applied = true;
+            ESP_LOGI(TAG,
+                     "[MAP_STREAM_VERIFY] top=%lu skipped_top=%lu node=%d addr=%d home_derp=%d legacy_derp=%d expiry=%d expired=%d applied_peers=1",
+                     (unsigned long)stats.top_fields,
+                     (unsigned long)stats.skipped_top_fields,
+                     stats.saw_node,
+                     stats.node_has_address,
+                     stats.node_has_home_derp,
+                     stats.node_has_legacy_derp,
+                     stats.node_has_key_expiry,
+                     stats.node_has_expired);
+            ESP_LOGI(TAG,
+                     "[MAP_STREAM_VERIFY] peers=%lu changed=%lu lowercase=%lu removed=%lu patches=%lu peer_eps=%lu patch_eps=%lu ipv6_skip=%lu/%lu queued=%lu removed_q=%lu patches_q=%lu dropped=%lu derp_regions=%lu derp_nodes=%lu skipped_values=%lu",
+                     (unsigned long)stats.peers,
+                     (unsigned long)stats.peers_changed,
+                     (unsigned long)stats.peers_lowercase,
+                     (unsigned long)stats.peers_removed,
+                     (unsigned long)stats.patches,
+                     (unsigned long)stats.peer_endpoints,
+                     (unsigned long)stats.patch_endpoints,
+                     (unsigned long)stats.peer_ipv6_endpoints_skipped,
+                     (unsigned long)stats.patch_ipv6_endpoints_skipped,
+                     (unsigned long)stats.peer_updates_queued,
+                     (unsigned long)stats.removed_updates_queued,
+                     (unsigned long)stats.patch_updates_queued,
+                     (unsigned long)stats.peer_updates_dropped,
+                     (unsigned long)stats.derp_regions,
+                     (unsigned long)stats.derp_nodes,
+                     (unsigned long)stats.skipped_values);
+        } else {
+            ESP_LOGW(TAG, "[MAP_STREAM_VERIFY] parse failed before cJSON fallback");
+        }
+    }
+
+    if (map_stream_applied) {
+        log_map_heap("after streaming MapResponse parse");
+        free(resp_buf);
+        log_map_heap("after resp_buf free");
+
+        int64_t t_map_done = esp_timer_get_time();
+        ESP_LOGI(TAG, "[TIMING] MapResponse recv+stream-parse: %lld ms (total map: %lld ms, %dKB)",
+                 (t_map_done - t_map_sent) / 1000,
+                 (t_map_done - t_map_start) / 1000,
+                 (int)(h2_total / 1024));
+        return 0;
+    }
+#endif
+
     /* Null-terminate */
     char saved = parse_start[parse_len];
     parse_start[parse_len] = '\0';
@@ -1627,6 +1707,9 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
 
     /* Extract self-node info */
+#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+    if (!map_stream_applied) {
+#endif
     {
         cJSON *node = cJSON_GetObjectItem(map_json, "Node");
         if (node) {
@@ -1713,11 +1796,26 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             }
         }
     }
+#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+    } else {
+        ESP_LOGI(TAG, "MapResponse self-node already applied by streaming parser");
+    }
+#endif
 
     /* Parse peers */
+#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+    if (!map_stream_applied) {
+        parse_peers_from_map_response(ml, map_json);
+    } else {
+        ESP_LOGI(TAG, "MapResponse peers already queued by streaming parser");
+    }
+#else
     parse_peers_from_map_response(ml, map_json);
-
+#endif
     /* Extract DERPMap if present — parse all regions and nodes */
+#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+    if (!map_stream_applied) {
+#endif
     cJSON *derp_map = cJSON_GetObjectItem(map_json, "DERPMap");
     if (derp_map) {
         cJSON *regions = cJSON_GetObjectItem(derp_map, "Regions");
@@ -1795,6 +1893,11 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             ESP_LOGI(TAG, "DERPMap: parsed %d regions", ml->derp_region_count);
         }
     }
+#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+    } else {
+        ESP_LOGI(TAG, "DERPMap already applied by streaming parser: %d regions", ml->derp_region_count);
+    }
+#endif
 
     cJSON_Delete(map_json);
     log_map_heap("after cJSON delete");

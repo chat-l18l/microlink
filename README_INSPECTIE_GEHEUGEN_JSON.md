@@ -236,6 +236,154 @@ Belangrijke randvoorwaarden:
 4. `DERPMap.Regions` kan als object met regio-ID keys binnenkomen; de parser moet niet alleen arrays ondersteunen maar ook object children kunnen itereren.
 5. Onbekende velden moeten goedkoop geskipt worden, want Tailscale voegt regelmatig velden toe.
 
+### MapResponse keep/skip analyse op basis van echte dump
+
+Deze analyse is gebaseerd op een echte ESP32-P4 MapResponse dump van ongeveer 30 KB:
+
+| Eigenschap | Waarde |
+|---|---:|
+| Totale MapResponse payload | 30329 bytes |
+| Prefix voor JSON | 4 bytes |
+| JSON offset | 4 |
+| JSON lengte na prefix | 30325 bytes |
+| Dump chunks | 60 |
+
+De dump bevatte ten minste deze top-level velden:
+
+| Top-level veld | Parseractie | Reden |
+|---|---|---|
+| `Node` | Keep | Eigen VPN IP, DERP-regio, key expiry en expired-status |
+| `DERPMap` | Keep gedeeltelijk | STUN/DERP host discovery gebruikt regio's en nodes |
+| `Peers` | Keep gedeeltelijk | Initiele peer table |
+| `PeersChanged` | Keep gedeeltelijk | Long-poll delta met nieuwe/gewijzigde peers |
+| `PeersRemoved` | Keep | Long-poll delta voor peer removal |
+| `PeersChangedPatch` | Keep gedeeltelijk | Lightweight endpoint/DERP updates |
+| `peers` | Keep gedeeltelijk | Lowercase fallback in bestaande parser |
+| `DNSConfig` | Skip | MicroLink gebruikt DNS-config niet |
+| `Domain` | Skip | Alleen control-plane/tailnet metadata |
+| `CollectServices` | Skip | Service discovery niet gebruikt |
+| `PacketFilter` | Skip | ACL/filterdata wordt niet lokaal afgedwongen in huidige datapad |
+| `UserProfiles` | Skip | UI/user metadata niet gebruikt |
+| `SSHPolicy` | Skip | Tailscale SSH niet geimplementeerd |
+| `ControlDialPlan` | Skip | Dial plan niet gebruikt |
+| `ControlTime` | Skip | Niet gebruikt voor timing/key checks |
+
+#### Self `Node`
+
+Alleen deze self-node velden zijn relevant:
+
+| JSON-pad | Parseractie | Gebruik |
+|---|---|---|
+| `Node.Addresses` | Keep eerste IPv4 | Zet `ml->vpn_ip` |
+| `Node.HomeDERP` | Keep | Zet `ml->derp_home_region` |
+| `Node.DERP` | Keep als fallback | Legacy fallback voor `HomeDERP` |
+| `Node.KeyExpiry` | Keep | Zet `ml->key_expiry_epoch` |
+| `Node.Expired` | Keep | Zet `ml->key_expired` |
+| `Node.Key` | Optioneel/logging | Alleen verificatielog tegen lokale key; kan later uit hot path |
+
+Deze self-node velden kunnen worden geskipt:
+
+| JSON-pad | Reden |
+|---|---|
+| `Node.ID` | Niet gebruikt |
+| `Node.StableID` | Niet gebruikt |
+| `Node.Name` | Niet gebruikt voor eigen state |
+| `Node.User` | Niet gebruikt |
+| `Node.DiscoKey` | Lokale disco key is al bekend |
+| `Node.AllowedIPs` | Huidige parser gebruikt alleen `Addresses` |
+| `Node.Hostinfo` | Niet gebruikt bij ontvangen MapResponse |
+| `Node.Created` | Niet gebruikt |
+| `Node.Tags` | Niet gebruikt |
+| `Node.MachineAuthorized` | Niet gebruikt in runtime state |
+| `Node.CapMap` | Niet gebruikt |
+
+#### `DERPMap`
+
+Alleen deze DERPMap velden zijn relevant:
+
+| JSON-pad | Parseractie | Gebruik |
+|---|---|---|
+| `DERPMap.Regions` | Keep gedeeltelijk | Container voor regio's |
+| `DERPMap.Regions.*.RegionID` | Keep | `ml_derp_region_t.region_id` |
+| `DERPMap.Regions.*.RegionCode` | Keep | `ml_derp_region_t.code` |
+| `DERPMap.Regions.*.Avoid` | Keep | `ml_derp_region_t.avoid` |
+| `DERPMap.Regions.*.Nodes` | Keep gedeeltelijk | Container voor nodes |
+| `Nodes[].HostName` | Keep | DERP/STUN hostname |
+| `Nodes[].IPv4` | Keep | STUN shortcut/resolution cache |
+| `Nodes[].IPv6` | Keep | IPv6 STUN/DERP metadata |
+| `Nodes[].STUNPort` | Keep | STUN poort, default 3478 bij afwezigheid |
+| `Nodes[].DERPPort` | Keep | DERP poort, default 443 bij afwezigheid |
+| `Nodes[].STUNOnly` | Keep | Onderscheid STUN-only nodes |
+
+Deze DERPMap velden kunnen worden geskipt:
+
+| JSON-pad | Reden |
+|---|---|
+| `DERPMap.Regions.*.RegionName` | Alleen menselijke naam/logging |
+| `DERPMap.Regions.*.Latitude` | Niet gebruikt |
+| `DERPMap.Regions.*.Longitude` | Niet gebruikt |
+| `Nodes[].Name` | Niet gebruikt; `HostName` is voldoende |
+| `Nodes[].RegionID` | Redundant met parent regio |
+| `Nodes[].CanPort80` | Niet gebruikt; DERP gebruikt huidige poortkeuze |
+
+#### Peers en peer updates
+
+Alleen deze peer velden zijn relevant:
+
+| JSON-pad | Parseractie | Gebruik |
+|---|---|---|
+| `Peers[]` / `PeersChanged[]` / `peers[]` | Keep gedeeltelijk | Per object een `ML_PEER_ADD` update |
+| `Name` | Keep | `update->hostname`, trailing dot strippen |
+| `Key` | Keep | Decode naar `update->public_key` |
+| `DiscoKey` | Keep | Decode naar `update->disco_key` |
+| `Addresses` | Keep eerste IPv4 | `update->vpn_ip` |
+| `HomeDERP` | Keep | `update->derp_region` |
+| `DERP` | Keep als fallback | Legacy fallback voor `HomeDERP` |
+| `Endpoints` | Keep IPv4 endpoints | Max `ML_MAX_ENDPOINTS`, IPv6 endpoints nu skippen |
+| `PeersRemoved[]` | Keep | Per nodekey een `ML_PEER_REMOVE` update |
+| `PeersChangedPatch` object key | Keep | Nodekey voor `ML_PEER_UPDATE_ENDPOINT` |
+| `PeersChangedPatch.*.DERPRegion` | Keep | Nieuwe DERP-regio |
+| `PeersChangedPatch.*.DERP` | Keep als fallback | Legacy DERP-regio |
+| `PeersChangedPatch.*.Endpoints` | Keep IPv4 endpoints | Nieuwe endpoint-lijst |
+
+Deze peer velden kunnen worden geskipt:
+
+| JSON-pad | Reden |
+|---|---|
+| `ID` | Niet gebruikt |
+| `StableID` | Niet gebruikt |
+| `User` | Niet gebruikt |
+| `AllowedIPs` | Voorlopig niet gebruikt; huidige datapad gebruikt eerste `Addresses` IPv4 |
+| `Hostinfo` | Niet gebruikt voor peer runtime, bevat vaak grote nested metadata |
+| `Created` | Niet gebruikt |
+| `Cap` | Niet gebruikt |
+| `Tags` | Niet gebruikt |
+| `LastSeen` | Niet gebruikt |
+| `Online` | Voorlopig niet gebruikt |
+| `Expired` | Voorlopig niet gebruikt; eventueel later gebruiken om verlopen peers te filteren |
+| `PrimaryRoutes` | Niet gebruikt |
+| `CapMap` | Niet gebruikt |
+| IPv6 entries in `Endpoints` | Huidige parser/datapad accepteert alleen `IPv4:port` |
+
+#### Grootste skip-winst in de dump
+
+De grootste lokale geheugen- en parsewinst zit in het direct overslaan van deze subtrees:
+
+| Subtree/veld | Waarom groot of onnodig |
+|---|---|
+| `Hostinfo` onder peers/self | Veel nested host metadata, services en SSH keys |
+| `Hostinfo.Services` | Service discovery niet gebruikt |
+| `Hostinfo.sshHostKeys` | Grote strings, Tailscale SSH niet gebruikt |
+| `CapMap` | Capability metadata niet gebruikt |
+| `DNSConfig` | Niet gebruikt |
+| `PacketFilter` | Potentieel groot, niet lokaal toegepast |
+| `UserProfiles` | UI metadata niet gebruikt |
+| `SSHPolicy` | Niet gebruikt |
+| `ControlDialPlan` | Niet gebruikt |
+| DERP metadata zoals `RegionName`, `Latitude`, `Longitude`, `CanPort80` | Alleen human/UI/extra metadata |
+
+Conclusie voor de streaming parser: parse alleen bekende keep-velden en skip elk onbekend object/array op depth. De parser moet geen compatibiliteitslaag bouwen voor ongebruikte velden; Tailscale mag extra velden toevoegen zolang de skip-logica correct blijft.
+
 ### HTTP Config Server JSON
 
 `ml_config_httpd.c` gebruikt cJSON voor REST endpoints:

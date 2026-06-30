@@ -39,5 +39,10 @@ CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_ML_ENABLE_CONFIG_HTTPD=y
 CONFIG_ML_CONFIG_MAX_ALLOWED_PEERS=512
 
+# Temporary parser-design instrumentation: dump initial MapResponse JSON.
+# Disable after collecting the sample JSON from device logs.
+CONFIG_ML_DUMP_MAP_RESPONSE_JSON=y
+CONFIG_ML_MAP_STREAM_PARSER_VERIFY=y
+
 # Priority peer (guaranteed WG slot even when peer table is full)
 CONFIG_ML_PRIORITY_PEER_IP=""

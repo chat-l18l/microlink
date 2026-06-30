@@ -71,3 +71,16 @@ Open punten:
 2. Controleer op hardware of DHCP, gateway en DNS correct binnenkomen via `IP_EVENT_ETH_GOT_IP`.
 
 Belangrijke vervolgstap: de MicroLink component zelf heeft nu nog `esp_wifi` als dependency. Voor een zuivere ESP32-P4 build moet die WiFi dependency waarschijnlijk optioneel gemaakt worden.
+
+## JSON Dump Instrumentatie
+
+Deze example zet tijdelijk `CONFIG_ML_DUMP_MAP_RESPONSE_JSON=y` in `sdkconfig.defaults`. Daardoor logt MicroLink de volledige initiële Tailscale MapResponse JSON in chunks:
+
+```text
+[MAP_JSON_DUMP_BEGIN] len=... chunks=...
+[MAP_JSON_DUMP 1/N offset=0 len=512] {...
+[MAP_JSON_DUMP 2/N offset=512 len=512] ...
+[MAP_JSON_DUMP_END] len=... chunks=...
+```
+
+Dit is bedoeld om een echte MapResponse met peers, adressen en DERPMap uit de device logs te halen en daarna een streaming/token parser te ontwerpen. Zet deze optie uit na het verzamelen van de JSON, want de logs kunnen veel peer metadata, node keys, disco keys en endpoint IP's bevatten.
