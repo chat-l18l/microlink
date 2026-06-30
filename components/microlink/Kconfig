@@ -112,14 +112,16 @@ menu "MicroLink V2 Configuration"
             hostnames, node keys, disco keys, endpoint IPs and ports. Do not
             enable in production or when logs may be shared publicly.
 
-    config ML_MAP_STREAM_PARSER_VERIFY
-        bool "Verify MapResponse with streaming parser"
-        default n
+    config ML_MAP_STREAM_PARSER
+        bool "Use streaming MapResponse parser"
+        default y
         help
-            Run the lightweight MapResponse parser next to the existing cJSON
-            parser and log counters for relevant fields. This is an incremental
-            migration aid: cJSON remains authoritative and runtime state is not
-            changed by the streaming parser while this option is enabled.
+            Use the lightweight MapResponse parser for the initial control-plane
+            peer sync. The parser extracts Node, DERPMap and peer updates without
+            building a cJSON DOM and compacts HTTP/2 DATA in-place to avoid the
+            extra JSON parse buffer.
+
+            If parsing fails, MicroLink falls back to the existing cJSON path.
 
     menu "Cellular Modem"
 

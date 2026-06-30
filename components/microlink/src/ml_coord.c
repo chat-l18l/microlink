@@ -1614,7 +1614,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
 #endif
 
-#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+#ifdef CONFIG_ML_MAP_STREAM_PARSER
     bool map_stream_applied = false;
     {
         ml_map_parse_stats_t stats;
@@ -1622,7 +1622,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         if (ok) {
             map_stream_applied = true;
             ESP_LOGI(TAG,
-                     "[MAP_STREAM_VERIFY] top=%lu skipped_top=%lu node=%d addr=%d home_derp=%d legacy_derp=%d expiry=%d expired=%d applied_peers=1",
+                     "[MAP_STREAM] top=%lu skipped_top=%lu node=%d addr=%d home_derp=%d legacy_derp=%d expiry=%d expired=%d applied_peers=1",
                      (unsigned long)stats.top_fields,
                      (unsigned long)stats.skipped_top_fields,
                      stats.saw_node,
@@ -1632,7 +1632,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                      stats.node_has_key_expiry,
                      stats.node_has_expired);
             ESP_LOGI(TAG,
-                     "[MAP_STREAM_VERIFY] peers=%lu changed=%lu lowercase=%lu removed=%lu patches=%lu peer_eps=%lu patch_eps=%lu ipv6_skip=%lu/%lu queued=%lu removed_q=%lu patches_q=%lu dropped=%lu derp_regions=%lu derp_nodes=%lu skipped_values=%lu",
+                     "[MAP_STREAM] peers=%lu changed=%lu lowercase=%lu removed=%lu patches=%lu peer_eps=%lu patch_eps=%lu ipv6_skip=%lu/%lu queued=%lu removed_q=%lu patches_q=%lu dropped=%lu derp_regions=%lu derp_nodes=%lu skipped_values=%lu",
                      (unsigned long)stats.peers,
                      (unsigned long)stats.peers_changed,
                      (unsigned long)stats.peers_lowercase,
@@ -1650,7 +1650,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                      (unsigned long)stats.derp_nodes,
                      (unsigned long)stats.skipped_values);
         } else {
-            ESP_LOGW(TAG, "[MAP_STREAM_VERIFY] parse failed before cJSON fallback");
+            ESP_LOGW(TAG, "[MAP_STREAM] parse failed before cJSON fallback");
         }
     }
 
@@ -1706,7 +1706,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
 
     /* Extract self-node info */
-#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+#ifdef CONFIG_ML_MAP_STREAM_PARSER
     if (!map_stream_applied) {
 #endif
     {
@@ -1795,14 +1795,14 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             }
         }
     }
-#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+#ifdef CONFIG_ML_MAP_STREAM_PARSER
     } else {
         ESP_LOGI(TAG, "MapResponse self-node already applied by streaming parser");
     }
 #endif
 
     /* Parse peers */
-#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+#ifdef CONFIG_ML_MAP_STREAM_PARSER
     if (!map_stream_applied) {
         parse_peers_from_map_response(ml, map_json);
     } else {
@@ -1812,7 +1812,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     parse_peers_from_map_response(ml, map_json);
 #endif
     /* Extract DERPMap if present — parse all regions and nodes */
-#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+#ifdef CONFIG_ML_MAP_STREAM_PARSER
     if (!map_stream_applied) {
 #endif
     cJSON *derp_map = cJSON_GetObjectItem(map_json, "DERPMap");
@@ -1892,7 +1892,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             ESP_LOGI(TAG, "DERPMap: parsed %d regions", ml->derp_region_count);
         }
     }
-#ifdef CONFIG_ML_MAP_STREAM_PARSER_VERIFY
+#ifdef CONFIG_ML_MAP_STREAM_PARSER
     } else {
         ESP_LOGI(TAG, "DERPMap already applied by streaming parser: %d regions", ml->derp_region_count);
     }

@@ -72,9 +72,11 @@ Open punten:
 
 Belangrijke vervolgstap: de MicroLink component zelf heeft nu nog `esp_wifi` als dependency. Voor een zuivere ESP32-P4 build moet die WiFi dependency waarschijnlijk optioneel gemaakt worden.
 
-## JSON Dump Instrumentatie
+## MapResponse Parser Instrumentatie
 
-Deze example zet tijdelijk `CONFIG_ML_DUMP_MAP_RESPONSE_JSON=y` in `sdkconfig.defaults`. Daardoor logt MicroLink de volledige initiële Tailscale MapResponse JSON in chunks:
+Deze example gebruikt de streaming MapResponse parser via `CONFIG_ML_MAP_STREAM_PARSER=y`. De volledige JSON dump staat standaard uit.
+
+Voor parserontwikkeling kan tijdelijk `CONFIG_ML_DUMP_MAP_RESPONSE_JSON=y` worden gezet. Daardoor logt MicroLink de volledige initiële Tailscale MapResponse JSON in chunks:
 
 ```text
 [MAP_JSON_DUMP_BEGIN] len=... chunks=...
@@ -83,4 +85,4 @@ Deze example zet tijdelijk `CONFIG_ML_DUMP_MAP_RESPONSE_JSON=y` in `sdkconfig.de
 [MAP_JSON_DUMP_END] len=... chunks=...
 ```
 
-Dit is bedoeld om een echte MapResponse met peers, adressen en DERPMap uit de device logs te halen en daarna een streaming/token parser te ontwerpen. Zet deze optie uit na het verzamelen van de JSON, want de logs kunnen veel peer metadata, node keys, disco keys en endpoint IP's bevatten.
+Dit is alleen bedoeld om een echte MapResponse met peers, adressen en DERPMap uit de device logs te halen. Zet deze optie weer uit na het verzamelen van de JSON, want de logs kunnen veel peer metadata, node keys, disco keys en endpoint IP's bevatten.
