@@ -109,9 +109,8 @@ extern "C" {
 #define ML_CTRL_BACKOFF_MAX_MS          30000
 #define ML_CTRL_KEEPALIVE_MS            60000
 
-/* Large tailnet buffer sizes (PSRAM-allocated, configurable via menuconfig) */
+/* Large tailnet buffer size (PSRAM-allocated, configurable via menuconfig) */
 #define ML_H2_BUFFER_SIZE       (CONFIG_ML_H2_BUFFER_SIZE_KB * 1024)
-#define ML_JSON_BUFFER_SIZE     (CONFIG_ML_JSON_BUFFER_SIZE_KB * 1024)
 
 /* Noise protocol */
 #define ML_NOISE_KEY_LEN        32

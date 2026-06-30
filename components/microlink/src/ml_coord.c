@@ -38,12 +38,16 @@
 static const char *TAG = "ml_coord";
 
 static void log_map_heap(const char *stage) {
+#ifdef CONFIG_ML_MAP_HEAP_LOG
     ESP_LOGI(TAG, "[MAP_HEAP] %s: int_free=%lu int_min=%lu psram_free=%lu psram_min=%lu",
              stage,
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    (void)stage;
+#endif
 }
 
 #ifdef CONFIG_ML_DUMP_MAP_RESPONSE_JSON
@@ -1535,7 +1539,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                             (h2_recv[fpos + 7] << 8) | h2_recv[fpos + 8];
         fpos += 9;
 
-        ESP_LOGI(TAG, "  H2 frame: type=%d flags=0x%02x len=%lu stream=%lu",
+        ESP_LOGD(TAG, "  H2 frame: type=%d flags=0x%02x len=%lu stream=%lu",
                  f_type, f_flags, (unsigned long)f_len, (unsigned long)f_stream);
 
         if (fpos + (int)f_len > (int)h2_total) {
@@ -1565,7 +1569,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         uint8_t wu_buf[13];
         int wu_len = ml_h2_build_window_update(wu_buf, 13, 0, (uint32_t)json_total);
         noise_send(ml, noise, wu_buf, wu_len);
-        ESP_LOGI(TAG, "Sent H2 WINDOW_UPDATE: %d bytes (connection level)", (int)json_total);
+        ESP_LOGD(TAG, "Sent H2 WINDOW_UPDATE: %d bytes (connection level)", (int)json_total);
     }
 
     if (json_total == 0) {
@@ -1574,8 +1578,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         return -1;
     }
 
-    ESP_LOGI(TAG, "MapResponse JSON: %d bytes", (int)json_total);
-    log_map_heap("before cJSON parse");
+    ESP_LOGD(TAG, "MapResponse JSON: %d bytes", (int)json_total);
+    log_map_heap("before MapResponse parse");
 
     /* Hex dump first 32 bytes for debugging prefix issues */
     {
@@ -1585,7 +1589,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
             sprintf(hexbuf + i * 3, "%02x ", h2_recv[i]);
         }
         hexbuf[dump * 3] = '\0';
-        ESP_LOGI(TAG, "MapResponse first %d bytes (hex): %s", dump, hexbuf);
+        ESP_LOGD(TAG, "MapResponse first %d bytes (hex): %s", dump, hexbuf);
     }
 
     /* Check for length prefix (Tailscale binary framing: 4-byte big-endian length before JSON) */
@@ -1601,7 +1605,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         }
     }
     if (json_offset > 0) {
-        ESP_LOGI(TAG, "JSON starts at offset %d (skipping %d-byte prefix)", json_offset, json_offset);
+        ESP_LOGD(TAG, "JSON starts at offset %d (skipping %d-byte prefix)", json_offset, json_offset);
         parse_start += json_offset;
         parse_len -= json_offset;
     } else if (json_offset < 0) {
@@ -1621,7 +1625,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         bool ok = ml_map_parse_response_apply_peers(ml, parse_start, parse_len, &stats);
         if (ok) {
             map_stream_applied = true;
-            ESP_LOGI(TAG,
+            ESP_LOGD(TAG,
                      "[MAP_STREAM] top=%lu skipped_top=%lu node=%d addr=%d home_derp=%d legacy_derp=%d expiry=%d expired=%d applied_peers=1",
                      (unsigned long)stats.top_fields,
                      (unsigned long)stats.skipped_top_fields,
@@ -1631,7 +1635,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
                      stats.node_has_legacy_derp,
                      stats.node_has_key_expiry,
                      stats.node_has_expired);
-            ESP_LOGI(TAG,
+            ESP_LOGD(TAG,
                      "[MAP_STREAM] peers=%lu changed=%lu lowercase=%lu removed=%lu patches=%lu peer_eps=%lu patch_eps=%lu ipv6_skip=%lu/%lu queued=%lu removed_q=%lu patches_q=%lu dropped=%lu derp_regions=%lu derp_nodes=%lu skipped_values=%lu",
                      (unsigned long)stats.peers,
                      (unsigned long)stats.peers_changed,

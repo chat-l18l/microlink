@@ -8,15 +8,14 @@ Deze notitie is bedoeld als startpunt voor toekomstige verbeteringen aan MicroLi
 
 MicroLink v2 is een ESP-IDF component/project voor een Tailscale-client op ESP32. De kern staat in `components/microlink/src`, met voorbeelden onder `examples/`.
 
-De grootste geheugenverbruiker is de Tailscale control-plane flow in `ml_coord.c`. Bij een MapResponse worden standaard twee grote PSRAM-buffers tegelijk gebruikt:
+De grootste geheugenverbruiker is de Tailscale control-plane flow in `ml_coord.c`. Oorspronkelijk gebruikte een MapResponse twee grote PSRAM-buffers plus een cJSON DOM; de huidige streaming-parser fast path gebruikt nog een grote H2-buffer en compacteert DATA in-place:
 
 | Buffer | Default | Locatie | Doel |
 |---|---:|---|---|
 | `ML_H2_BUFFER_SIZE` | 512 KB | PSRAM | Alle gedecrypte HTTP/2 frames verzamelen |
-| `ML_JSON_BUFFER_SIZE` | 512 KB | PSRAM | DATA-frame payload samenvoegen tot JSON |
-| cJSON DOM | variabel, vaak 2-3x JSON | PSRAM via hooks | Parse tree van dezelfde JSON |
+| cJSON DOM | fallback only | PSRAM via hooks | Alleen nog gebruikt als streaming parser faalt |
 
-Piekgebruik bij MapResponse is daardoor niet alleen 1 MB, maar eerder `H2 buffer + JSON buffer + cJSON DOM + tijdelijke Noise frame buffers`. Voor grote tailnets is dit logisch, maar hier zit ook de meeste optimalisatieruimte.
+De eerdere `ML_JSON_BUFFER_SIZE`-buffer en cJSON DOM-piek zijn uit de normale initial MapResponse fast path verwijderd. De resterende grote optimalisatieruimte zit in het verkleinen of streamend vervangen van `h2_recv`.
 
 ## Projectstructuur
 
@@ -85,17 +84,17 @@ Belangrijkste flow in `ml_coord.c`:
 2. RegisterResponse wordt ontvangen in een 16 KB H2-buffer en 8 KB response-buffer.
 3. `do_fetch_peers()` bouwt MapRequest met cJSON.
 4. MapResponse wordt volledig verzameld in `h2_recv` (`ML_H2_BUFFER_SIZE`, default 512 KB).
-5. DATA frames worden gekopieerd naar `resp_buf` (`ML_JSON_BUFFER_SIZE`, default 512 KB).
-6. `resp_buf` wordt tijdelijk null-terminated en volledig geparsed met `cJSON_Parse()`.
-7. `parse_peers_from_map_response()` loopt door `Peers`, `PeersChanged`, `PeersRemoved` en `PeersChangedPatch` en stuurt per peer een `ml_peer_update_t` naar `wg_mgr`.
+5. DATA frames worden in-place naar het begin van `h2_recv` gecompact.
+6. De streaming MapResponse parser verwerkt `Node`, `DERPMap`, `Peers`, `PeersChanged`, `PeersRemoved` en `PeersChangedPatch` zonder cJSON DOM.
+7. Als streaming parsing faalt, valt de code terug op de oude cJSON parser.
 
 Belangrijk: dezelfde MapResponse staat op piekmoment in meerdere vormen in geheugen:
 
 | Vorm | Geheugen |
 |---|---:|
 | Gedecrypte HTTP/2 bytes | tot `ML_H2_BUFFER_SIZE` |
-| JSON payload copy | tot `ML_JSON_BUFFER_SIZE` |
-| cJSON DOM tree | vaak 2-3x JSON-grootte |
+| JSON payload copy | geen aparte buffer meer; in-place in `h2_recv` |
+| cJSON DOM tree | alleen fallback |
 | Per-peer update queue items | tijdelijk, `sizeof(ml_peer_update_t)` per pending update |
 | Noise frame buffer | tijdelijk 64 KB per read-loop iteratie |
 
@@ -485,10 +484,10 @@ Aanbevolen volgorde:
 
 Stap 1 en 2 zijn uitgevoerd in `components/microlink/src/ml_coord.c`:
 
-1. Tijdelijke `[MAP_HEAP]` meetlogs toegevoegd rond `do_fetch_peers()` voor interne heap en PSRAM, inclusief minimum-watermarks.
+1. `[MAP_HEAP]` meetlogs toegevoegd rond `do_fetch_peers()` voor interne heap en PSRAM, inclusief minimum-watermarks. Deze staan nu achter `CONFIG_ML_MAP_HEAP_LOG`.
 2. De 64 KB Noise `frame_buf` in `do_fetch_peers()` wordt nu eenmalig buiten de receive-loop gealloceerd en hergebruikt.
 
-Deze instrumentatie is bewust expliciet gelogd zodat de MapResponse-piek op echte ESP32-hardware gemeten kan worden. Als de metingen klaar zijn, deze logs verwijderen of achter een debug/Kconfig-vlag zetten, bijvoorbeeld `CONFIG_ML_COORD_HEAP_TRACE` of een runtime debug flag.
+Deze instrumentatie is opt-in via Kconfig zodat de MapResponse-piek op echte ESP32-hardware gemeten kan worden zonder normale builds te vervuilen.
 
 Belangrijke meetpunten in de logs:
 
@@ -496,10 +495,10 @@ Belangrijke meetpunten in de logs:
 |---|---|
 | `before MapResponse buffers` | Baseline voor de grote allocaties |
 | `after h2_recv alloc` | Kosten van `ML_H2_BUFFER_SIZE` |
-| `after resp_buf alloc` | Kosten van `ML_JSON_BUFFER_SIZE` |
 | `after frame_buf alloc` | Vaste 64 KB Noise frame buffer |
-| `before cJSON parse` / `after cJSON parse` | Extra cJSON DOM-gebruik |
-| `after cJSON delete` / `after resp_buf free` | Hoeveel geheugen echt terugkomt |
+| `after H2 DATA compact` | JSON payload is in-place naar begin van `h2_recv` verplaatst |
+| `before MapResponse parse` | Baseline vlak voor streaming parser of fallback |
+| `after h2_recv/json buffer free` | Hoeveel geheugen terugkomt na vrijgeven van de gecombineerde H2/JSON buffer |
 
 Volgende stap: de meetresultaten gebruiken om te bepalen of eerst dubbele buffering (`h2_recv` -> `resp_buf`) wordt verwijderd, of dat MapResponse parsing direct cJSON-vrij/token-based gemaakt moet worden.
 

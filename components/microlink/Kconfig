@@ -86,31 +86,25 @@ menu "MicroLink V2 Configuration"
             - 1024: ~600 peers (large enterprise tailnets)
             - 2048: ~1200 peers (very large tailnets, requires 8MB PSRAM)
 
-    config ML_JSON_BUFFER_SIZE_KB
-        int "JSON parse buffer size (KB)"
-        default 512
-        range 64 2048
-        help
-            Size of the PSRAM-allocated buffer for parsing JSON MapResponse
-            data. cJSON builds an in-memory DOM tree that uses 2-3x the
-            raw JSON size, so this should be at least as large as the
-            HTTP/2 buffer.
-
-            Match this to ML_H2_BUFFER_SIZE_KB unless you have a reason
-            to set them differently.
-
     config ML_DUMP_MAP_RESPONSE_JSON
         bool "Dump full MapResponse JSON to log"
         default n
         help
             Dump the initial Tailscale MapResponse JSON payload to the ESP-IDF
-            logger in numbered chunks. This is intended only as temporary
-            instrumentation while designing a streaming/token parser for large
-            tailnets.
+            logger in numbered chunks. This is intended only for parser/debug
+            diagnostics on real devices.
 
             Warning: this can log hundreds of kilobytes of peer metadata,
             hostnames, node keys, disco keys, endpoint IPs and ports. Do not
             enable in production or when logs may be shared publicly.
+
+    config ML_MAP_HEAP_LOG
+        bool "Log MapResponse heap checkpoints"
+        default n
+        help
+            Log internal heap and PSRAM watermarks around initial MapResponse
+            receive/parsing. Useful while tuning memory use, but noisy in normal
+            deployments.
 
     config ML_MAP_STREAM_PARSER
         bool "Use streaming MapResponse parser"
