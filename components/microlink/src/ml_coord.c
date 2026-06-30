@@ -1426,14 +1426,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     size_t h2_total = 0;
     log_map_heap("after h2_recv alloc");
 
-    uint8_t *resp_buf = ml_psram_malloc(ML_JSON_BUFFER_SIZE);
-    if (!resp_buf) { free(h2_recv); return -1; }
-    size_t json_total = 0;
-    log_map_heap("after resp_buf alloc");
-
     uint8_t *frame_buf = ml_psram_malloc(65536);
     if (!frame_buf) {
-        free(resp_buf);
         free(h2_recv);
         return -1;
     }
@@ -1527,7 +1521,10 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
              (int)(h2_total / 1024),
              (unsigned long)(ml_get_time_ms() - recv_start_ms));
 
-    /* Now parse complete H2 frames from accumulated buffer */
+    /* Now parse complete H2 frames from accumulated buffer. DATA payloads are
+     * compacted in-place to the start of h2_recv, avoiding a second 512KB JSON
+     * buffer while still preserving a contiguous JSON payload for the parser. */
+    size_t json_total = 0;
     int fpos = 0;
     while (fpos + 9 <= (int)h2_total) {
         uint32_t f_len = (h2_recv[fpos] << 16) | (h2_recv[fpos + 1] << 8) | h2_recv[fpos + 2];
@@ -1548,16 +1545,18 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         }
 
         if (f_type == 0x00 && f_len > 0) {  /* DATA frame */
-            if (json_total + f_len < ML_JSON_BUFFER_SIZE) {
-                memcpy(resp_buf + json_total, h2_recv + fpos, f_len);
+            if (json_total + f_len < ML_H2_BUFFER_SIZE) {
+                memmove(h2_recv + json_total, h2_recv + fpos, f_len);
                 json_total += f_len;
+            } else {
+                ESP_LOGW(TAG, "JSON payload exceeds H2 buffer at %dKB, truncating", (int)(json_total / 1024));
+                break;
             }
         }
 
         fpos += f_len;
     }
-    free(h2_recv);
-    log_map_heap("after h2_recv free");
+    log_map_heap("after H2 DATA compact");
 
     /* Send connection-level WINDOW_UPDATE to replenish HTTP/2 flow control.
      * Stream 3 is already closed (END_STREAM received), so only update stream 0.
@@ -1571,7 +1570,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
 
     if (json_total == 0) {
         ESP_LOGW(TAG, "Empty MapResponse");
-        free(resp_buf);
+        free(h2_recv);
         return -1;
     }
 
@@ -1583,20 +1582,20 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         int dump = json_total < 32 ? (int)json_total : 32;
         char hexbuf[97];
         for (int i = 0; i < dump; i++) {
-            sprintf(hexbuf + i * 3, "%02x ", resp_buf[i]);
+            sprintf(hexbuf + i * 3, "%02x ", h2_recv[i]);
         }
         hexbuf[dump * 3] = '\0';
         ESP_LOGI(TAG, "MapResponse first %d bytes (hex): %s", dump, hexbuf);
     }
 
     /* Check for length prefix (Tailscale binary framing: 4-byte big-endian length before JSON) */
-    char *parse_start = (char *)resp_buf;
+    char *parse_start = (char *)h2_recv;
     size_t parse_len = json_total;
 
     /* Find the start of JSON - look for '{' in first 8 bytes */
     int json_offset = -1;
     for (int i = 0; i < 8 && i < (int)json_total; i++) {
-        if (resp_buf[i] == '{') {
+        if (h2_recv[i] == '{') {
             json_offset = i;
             break;
         }
@@ -1657,8 +1656,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
 
     if (map_stream_applied) {
         log_map_heap("after streaming MapResponse parse");
-        free(resp_buf);
-        log_map_heap("after resp_buf free");
+        free(h2_recv);
+        log_map_heap("after h2_recv/json buffer free");
 
         int64_t t_map_done = esp_timer_get_time();
         ESP_LOGI(TAG, "[TIMING] MapResponse recv+stream-parse: %lld ms (total map: %lld ms, %dKB)",
@@ -1680,7 +1679,7 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     if (!map_json) {
         const char *err = cJSON_GetErrorPtr();
         ESP_LOGE(TAG, "MapResponse JSON parse failed near: %.50s", err ? err : "unknown");
-        free(resp_buf);
+        free(h2_recv);
         return -1;
     }
 
@@ -1901,8 +1900,8 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
 
     cJSON_Delete(map_json);
     log_map_heap("after cJSON delete");
-    free(resp_buf);
-    log_map_heap("after resp_buf free");
+    free(h2_recv);
+    log_map_heap("after h2_recv/json buffer free");
 
     int64_t t_map_done = esp_timer_get_time();
     ESP_LOGI(TAG, "[TIMING] MapResponse recv+parse: %lld ms (total map: %lld ms, %dKB)",
