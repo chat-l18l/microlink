@@ -6,6 +6,18 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Lightweight, MapResponse-specific JSON parser.
+ *
+ * This is deliberately not a general-purpose JSON library. It implements the
+ * small SAX-style scanner needed by Tailscale MapResponse and applies only the
+ * fields MicroLink uses: self Node state, DERPMap and peer updates. Unknown
+ * values are skipped recursively without allocating cJSON nodes.
+ *
+ * The parser replaces the former memory-heavy path for initial peer sync:
+ * H2 buffer -> separate JSON buffer -> cJSON DOM. ml_coord.c now compacts H2
+ * DATA in-place and calls this parser, reducing peak PSRAM and improving
+ * startup performance on larger tailnets.
+ */
 typedef struct {
     const char *s;
     size_t len;
@@ -45,6 +57,16 @@ static int hex_value(char c) {
     return -1;
 }
 
+/* Decode Tailscale key strings in-place.
+ *
+ * Preconditions:
+ * - `s` is either raw hex or has the expected prefix (`nodekey:` or
+ *   `discokey:`).
+ * - At least 64 hex characters follow the optional prefix.
+ *
+ * Postconditions:
+ * - `out` contains the 32-byte key on success.
+ */
 static bool decode_key(const char *s, const char *prefix, uint8_t out[32]) {
     size_t prefix_len = strlen(prefix);
     if (strncmp(s, prefix, prefix_len) == 0) s += prefix_len;
@@ -57,6 +79,17 @@ static bool decode_key(const char *s, const char *prefix, uint8_t out[32]) {
     return true;
 }
 
+/* Queue a parser-produced peer update for wg_mgr.
+ *
+ * Preconditions:
+ * - The parser is running in coord-task context.
+ * - `src` contains a fully parsed add/remove/endpoint update.
+ *
+ * Postconditions:
+ * - In apply-peer mode, a PSRAM-backed copy is sent to `peer_update_queue`.
+ * - In verify/basic modes, this is a no-op so the same parser code can be used
+ *   for dry-run validation.
+ */
 static bool queue_peer_update(parser_t *p, const ml_peer_update_t *src) {
     if (!p->apply_peers || !p->ml || !p->ml->peer_update_queue) return true;
 
@@ -193,6 +226,12 @@ static bool parse_number(parser_t *p) {
 
 static bool skip_value(parser_t *p);
 
+/* Skip an arbitrary JSON array/object/scalar without allocation.
+ *
+ * This is the key scalability property: large subtrees such as DNSConfig,
+ * PacketFilter, Hostinfo, UserProfiles and SSHPolicy are advanced over by JSON
+ * depth instead of being materialized into a DOM.
+ */
 static bool skip_array(parser_t *p) {
     if (!consume(p, '[')) return false;
     skip_ws(p);
@@ -303,6 +342,13 @@ static bool parse_endpoints(parser_t *p, uint32_t *ipv4_count, uint32_t *ipv6_sk
     return false;
 }
 
+/* Parse the self Node object.
+ *
+ * Postconditions in apply-node mode:
+ * - `ml->vpn_ip` is set from the first IPv4 Address if it was not set yet.
+ * - `ml->derp_home_region` is set from HomeDERP/DERP or the compiled default.
+ * - key expiry and expired state are refreshed.
+ */
 static bool parse_node(parser_t *p) {
     char key[64];
     bool saw_derp = false;
@@ -378,6 +424,13 @@ static bool parse_node(parser_t *p) {
     return false;
 }
 
+/* Parse one peer object or one PeersChangedPatch value.
+ *
+ * Full peer objects produce ML_PEER_ADD updates. Patch values produce
+ * ML_PEER_UPDATE_ENDPOINT updates and use the property name as the node key.
+ * IPv6 endpoints are counted but skipped because the current data path only
+ * installs IPv4 UDP endpoints.
+ */
 static bool parse_peer_object(parser_t *p, bool patch, ml_peer_update_t *update) {
     char key[64];
     if (!consume(p, '{')) return false;
@@ -560,6 +613,16 @@ static bool parse_derp_node(parser_t *p, ml_derp_node_t *node) {
     return false;
 }
 
+/* Parse the Nodes array inside one DERP region.
+ *
+ * Preconditions:
+ * - The parser is positioned at a JSON array value for `Nodes`.
+ *
+ * Postconditions in apply-derp mode:
+ * - At most ML_MAX_DERP_NODES nodes per region are stored.
+ * - Extra nodes are still consumed so the parser remains synchronized, but they
+ *   are not materialized.
+ */
 static bool parse_derp_nodes(parser_t *p, ml_derp_region_t *region) {
     if (!consume(p, '[')) return false;
     skip_ws(p);
@@ -631,6 +694,17 @@ static bool parse_derp_region(parser_t *p) {
     return false;
 }
 
+/* Parse DERPMap.Regions into the fixed-size MicroLink DERP map.
+ *
+ * Preconditions:
+ * - The parser is positioned at either the Regions object (normal Tailscale
+ *   format, keyed by region id) or an array fallback.
+ *
+ * Postconditions in apply-derp mode:
+ * - At most ML_MAX_DERP_REGIONS regions are stored.
+ * - Extra regions are still consumed from JSON so the parser remains
+ *   synchronized, but they are not materialized.
+ */
 static bool parse_derp_regions(parser_t *p) {
     char key[32];
     skip_ws(p);
@@ -686,6 +760,8 @@ static bool parse_response_internal(microlink_t *ml, bool apply_node, bool apply
                                     bool apply_peers,
                                     const char *json, size_t len,
                                     ml_map_parse_stats_t *stats) {
+    /* Preconditions are enforced here rather than in each public wrapper so the
+     * parser has a single, predictable failure mode for malformed inputs. */
     if (!json || !stats) return false;
     memset(stats, 0, sizeof(*stats));
 

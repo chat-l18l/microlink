@@ -1419,10 +1419,21 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     int64_t t_map_sent = esp_timer_get_time();
     ESP_LOGI(TAG, "[TIMING] MapRequest send: %lld ms", (t_map_sent - t_map_start) / 1000);
 
-    /* Read MapResponse - accumulate ALL decrypted Noise frames first, then parse H2.
-     * This is critical because a single H2 frame can span multiple Noise frames
-     * (v1 does the same with h2_buffer).
-     * Smart timeout: extend to 60s for large tailnets (300+ peers = 240KB+). */
+    /* Read the initial MapResponse.
+     *
+     * Preconditions:
+     * - The Noise/H2 control connection is established and stream 3 contains the
+     *   non-streaming MapResponse for the initial peer sync.
+     * - `ML_H2_BUFFER_SIZE` is large enough for the encrypted H2 response for the
+     *   configured tailnet size.
+     *
+     * The implementation still accumulates decrypted H2 bytes because H2 frames
+     * can span Noise frames. Unlike the old implementation, it does not allocate
+     * a second JSON buffer and does not build a cJSON DOM on the normal fast path.
+     * DATA payloads are compacted in-place and then handed to the streaming
+     * parser, which only materializes fields MicroLink uses. This reduces peak
+     * PSRAM and makes larger networks cheaper and faster to process.
+     */
     log_map_heap("before MapResponse buffers");
 
     uint8_t *h2_recv = ml_psram_malloc(ML_H2_BUFFER_SIZE);  /* 512KB for 300+ peer tailnets */
@@ -1525,9 +1536,14 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
              (int)(h2_total / 1024),
              (unsigned long)(ml_get_time_ms() - recv_start_ms));
 
-    /* Now parse complete H2 frames from accumulated buffer. DATA payloads are
-     * compacted in-place to the start of h2_recv, avoiding a second 512KB JSON
-     * buffer while still preserving a contiguous JSON payload for the parser. */
+    /* Compact H2 DATA payloads in-place.
+     *
+     * Postconditions:
+     * - `h2_recv[0..json_total)` contains the contiguous MapResponse body.
+     * - H2 frame headers and non-DATA frames have been discarded.
+     * - No separate JSON buffer has been allocated, so peak memory is bounded by
+     *   one H2 buffer plus the temporary Noise frame buffer.
+     */
     size_t json_total = 0;
     int fpos = 0;
     while (fpos + 9 <= (int)h2_total) {
@@ -1622,6 +1638,13 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     bool map_stream_applied = false;
     {
         ml_map_parse_stats_t stats;
+        /* Fast path: parse and apply the response without cJSON.
+         *
+         * Success postconditions:
+         * - self-node fields and DERPMap are already in `ml`.
+         * - peer add/remove/patch updates have been queued to wg_mgr.
+         * - `h2_recv` can be freed immediately after logging/timing.
+         */
         bool ok = ml_map_parse_response_apply_peers(ml, parse_start, parse_len, &stats);
         if (ok) {
             map_stream_applied = true;
@@ -1672,6 +1695,12 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
     }
 #endif
 
+    /* Fallback path.
+     *
+     * Reaching this point means the streaming parser is disabled or rejected the
+     * response. Keep the legacy cJSON parser for safety so unexpected control
+     * plane changes do not prevent the device from joining the network.
+     */
     /* Null-terminate */
     char saved = parse_start[parse_len];
     parse_start[parse_len] = '\0';
