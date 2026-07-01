@@ -211,6 +211,15 @@ typedef enum {
     ML_CMD_FORCE_RECONNECT,     /* Force reconnection (after DERP failure, etc.) */
 } ml_coord_cmd_t;
 
+typedef enum {
+    ML_CTRL_ERR_NONE = 0,
+    ML_CTRL_ERR_AUTH_KEY_INVALID,
+    ML_CTRL_ERR_NODE_NOT_FOUND,
+    ML_CTRL_ERR_NON_JSON_RESPONSE,
+    ML_CTRL_ERR_REGISTER_REJECTED,
+    ML_CTRL_ERR_TRANSIENT,
+} ml_control_error_t;
+
 /* Peer update (from coord to wg_mgr) */
 typedef struct {
     enum {
@@ -418,6 +427,12 @@ struct microlink_s {
     /* Key expiry (parsed from MapResponse self-node) */
     int64_t key_expiry_epoch;       /* Unix epoch seconds, 0 = no expiry */
     bool key_expired;               /* true if Node.Expired == true */
+
+    /* Last control-plane/provisioning error, exposed by the config UI. */
+    ml_control_error_t control_error_code;
+    char control_error_message[160];
+    char control_error_hint[192];
+    uint64_t control_error_since_ms;
 
     /* Resolved timing (set during init from config, 0 = default) */
     uint32_t t_disco_heartbeat_ms;

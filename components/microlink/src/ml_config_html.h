@@ -100,6 +100,10 @@ static const char CONFIG_PAGE_HTML[] =
 
 /* Empty state */
 ".empty{color:#484f58;font-size:.9em;padding:20px;text-align:center}"
+".ctrl-alert{display:none;background:#da363320;color:#f85149;border:1px solid #da363340;"
+"border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:.9em}"
+".ctrl-alert strong{display:block;margin-bottom:4px;color:#ff7b72}"
+".ctrl-alert span{display:block;color:#ffa198;margin-top:4px}"
 
 "</style></head><body>"
 
@@ -113,6 +117,8 @@ static const char CONFIG_PAGE_HTML[] =
 "</div></div>"
 
 "<div class='wrap'>"
+"<div class='ctrl-alert' id='ctrlAlert'><strong id='ctrlAlertMsg'></strong>"
+"<span id='ctrlAlertHint'></span></div>"
 
 /* ---- Monitor Section ---- */
 "<div class='section'>"
@@ -256,6 +262,12 @@ static const char CONFIG_PAGE_HTML[] =
 "const d=await r.json();"
 "document.getElementById('vpnIp').textContent=d.vpn_ip||'--';"
 "document.getElementById('hostName').textContent=d.hostname||'';"
+"const a=document.getElementById('ctrlAlert');"
+"if(d.control_error&&d.control_error!=='none'){"
+"document.getElementById('ctrlAlertMsg').textContent=d.control_error_message||'Control plane error';"
+"document.getElementById('ctrlAlertHint').textContent=d.control_error_hint||d.control_error;"
+"a.style.display='block';"
+"}else{a.style.display='none';}"
 "}catch(e){document.getElementById('vpnIp').textContent='offline';}"
 "}"
 

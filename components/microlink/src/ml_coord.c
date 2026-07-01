@@ -34,6 +34,7 @@
 #include "mbedtls/base64.h"
 #include <string.h>
 #include <errno.h>
+#include <ctype.h>
 
 static const char *TAG = "ml_coord";
 
@@ -71,6 +72,54 @@ static void log_map_json_dump(const char *json, size_t len) {
 
 /* Effective control plane host: NVS override or compiled default */
 #define CTRL_HOST(ml) ((ml)->ctrl_host[0] ? (ml)->ctrl_host : ML_CTRL_HOST)
+
+#define ML_COORD_FATAL_CONTROL_ERROR (-2)
+
+static const char *control_error_name(ml_control_error_t code) {
+    switch (code) {
+        case ML_CTRL_ERR_NONE: return "none";
+        case ML_CTRL_ERR_AUTH_KEY_INVALID: return "auth_key_invalid";
+        case ML_CTRL_ERR_NODE_NOT_FOUND: return "node_not_found";
+        case ML_CTRL_ERR_NON_JSON_RESPONSE: return "non_json_response";
+        case ML_CTRL_ERR_REGISTER_REJECTED: return "register_rejected";
+        case ML_CTRL_ERR_TRANSIENT: return "transient";
+        default: return "unknown";
+    }
+}
+
+static void clear_control_error(microlink_t *ml) {
+    ml->control_error_code = ML_CTRL_ERR_NONE;
+    ml->control_error_message[0] = '\0';
+    ml->control_error_hint[0] = '\0';
+    ml->control_error_since_ms = 0;
+}
+
+static void set_control_error(microlink_t *ml, ml_control_error_t code,
+                              const char *message, const char *hint) {
+    ml->control_error_code = code;
+    snprintf(ml->control_error_message, sizeof(ml->control_error_message),
+             "%s", message ? message : "Control plane request failed");
+    snprintf(ml->control_error_hint, sizeof(ml->control_error_hint),
+             "%s", hint ? hint : "");
+    ml->control_error_since_ms = ml_get_time_ms();
+}
+
+static const char *auth_key_fix_hint(void) {
+    return "Paste a valid tskey-auth- key in the web interface under Device Settings, click Save Settings, then Restart Device. Alternatively set CONFIG_ML_TAILSCALE_AUTH_KEY at build time.";
+}
+
+static void copy_printable_body(char *dst, size_t dst_size, const char *src, size_t src_len) {
+    size_t n = 0;
+    if (dst_size == 0) return;
+    for (size_t i = 0; i < src_len && n + 1 < dst_size; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c == '\r' || c == '\n' || c == '\t') c = ' ';
+        if (!isprint(c)) break;
+        dst[n++] = (char)c;
+    }
+    while (n > 0 && dst[n - 1] == ' ') n--;
+    dst[n] = '\0';
+}
 
 /* NodeKeyChallenge from EarlyNoise (stored between handshake and register) */
 static uint8_t s_node_key_challenge[32] = {0};
@@ -980,8 +1029,25 @@ static int do_register(microlink_t *ml, ml_noise_state_t *noise) {
     parse_start[parse_len] = saved;
     free(resp_buf);
 
-    /* Extract our VPN IP from Node.Addresses */
     cJSON *node = cJSON_GetObjectItem(resp_json, "Node");
+    cJSON *user = cJSON_GetObjectItem(resp_json, "User");
+    cJSON *user_id = user ? cJSON_GetObjectItem(user, "ID") : NULL;
+    cJSON *display_name = user ? cJSON_GetObjectItem(user, "DisplayName") : NULL;
+    if (!node && user_id && cJSON_IsNumber(user_id) && user_id->valueint == 0) {
+        bool empty_display = !display_name || !cJSON_IsString(display_name) ||
+                             !display_name->valuestring || display_name->valuestring[0] == '\0';
+        if (empty_display) {
+            set_control_error(ml, ML_CTRL_ERR_AUTH_KEY_INVALID,
+                              "Control plane rejected registration: invalid or missing Tailscale auth key.",
+                              auth_key_fix_hint());
+            ESP_LOGE(TAG, "%s", ml->control_error_message);
+            ESP_LOGE(TAG, "%s", ml->control_error_hint);
+            cJSON_Delete(resp_json);
+            return ML_COORD_FATAL_CONTROL_ERROR;
+        }
+    }
+
+    /* Extract our VPN IP from Node.Addresses */
     if (node) {
         cJSON *addresses = cJSON_GetObjectItem(node, "Addresses");
         if (addresses && cJSON_GetArraySize(addresses) > 0) {
@@ -1625,7 +1691,22 @@ static int do_fetch_peers(microlink_t *ml, ml_noise_state_t *noise) {
         parse_start += json_offset;
         parse_len -= json_offset;
     } else if (json_offset < 0) {
-        ESP_LOGW(TAG, "No '{' found in first 8 bytes of MapResponse!");
+        char body[96];
+        copy_printable_body(body, sizeof(body), (const char *)h2_recv, json_total);
+        if (strstr(body, "node not found")) {
+            set_control_error(ml, ML_CTRL_ERR_NODE_NOT_FOUND,
+                              "Control plane rejected MapRequest: node not found.",
+                              auth_key_fix_hint());
+        } else {
+            char msg[160];
+            snprintf(msg, sizeof(msg), "Control plane returned a non-JSON MapResponse: %.80s", body[0] ? body : "<binary/empty>");
+            set_control_error(ml, ML_CTRL_ERR_NON_JSON_RESPONSE, msg,
+                              "Check the auth key and control-plane host. The MapResponse must be JSON.");
+        }
+        ESP_LOGE(TAG, "%s", ml->control_error_message);
+        if (ml->control_error_hint[0]) ESP_LOGE(TAG, "%s", ml->control_error_hint);
+        free(h2_recv);
+        return ML_COORD_FATAL_CONTROL_ERROR;
     }
 
 #ifdef CONFIG_ML_DUMP_MAP_RESPONSE_JSON
@@ -2318,6 +2399,7 @@ void ml_coord_task(void *arg) {
             switch (cmd) {
             case ML_CMD_CONNECT:
                 if (state == COORD_IDLE) {
+                    clear_control_error(ml);
                     state = COORD_STUN_PROBE;
                     ml->state = ML_STATE_CONNECTING;
                 }
@@ -2415,24 +2497,54 @@ void ml_coord_task(void *arg) {
 
         case COORD_REGISTER:
             ESP_LOGI(TAG, "Registering...");
-            if (do_register(ml, &noise) < 0) {
-                ESP_LOGE(TAG, "Registration failed");
-                ml_close_sock(ml->coord_sock);
-                ml->coord_sock = -1;
-                state = COORD_RECONNECTING;
-                break;
+            {
+                int rc = do_register(ml, &noise);
+                if (rc == ML_COORD_FATAL_CONTROL_ERROR) {
+                    ESP_LOGE(TAG, "Registration stopped due to control-plane error (%s)",
+                             control_error_name(ml->control_error_code));
+                    ml_close_sock(ml->coord_sock);
+                    ml->coord_sock = -1;
+                    ml->state = ML_STATE_ERROR;
+                    if (ml->state_cb) {
+                        ml->state_cb(ml, ML_STATE_ERROR, ml->state_cb_data);
+                    }
+                    state = COORD_IDLE;
+                    break;
+                }
+                if (rc < 0) {
+                    ESP_LOGE(TAG, "Registration failed");
+                    ml_close_sock(ml->coord_sock);
+                    ml->coord_sock = -1;
+                    state = COORD_RECONNECTING;
+                    break;
+                }
             }
             state = COORD_FETCH_PEERS;
             break;
 
         case COORD_FETCH_PEERS:
             ESP_LOGI(TAG, "Fetching peers...");
-            if (do_fetch_peers(ml, &noise) < 0) {
-                ESP_LOGW(TAG, "MapRequest failed, will retry");
-                ml_close_sock(ml->coord_sock);
-                ml->coord_sock = -1;
-                state = COORD_RECONNECTING;
-                break;
+            {
+                int rc = do_fetch_peers(ml, &noise);
+                if (rc == ML_COORD_FATAL_CONTROL_ERROR) {
+                    ESP_LOGE(TAG, "MapRequest stopped due to control-plane error (%s)",
+                             control_error_name(ml->control_error_code));
+                    ml_close_sock(ml->coord_sock);
+                    ml->coord_sock = -1;
+                    ml->state = ML_STATE_ERROR;
+                    if (ml->state_cb) {
+                        ml->state_cb(ml, ML_STATE_ERROR, ml->state_cb_data);
+                    }
+                    state = COORD_IDLE;
+                    break;
+                }
+                if (rc < 0) {
+                    ESP_LOGW(TAG, "MapRequest failed, will retry");
+                    ml_close_sock(ml->coord_sock);
+                    ml->coord_sock = -1;
+                    state = COORD_RECONNECTING;
+                    break;
+                }
             }
 
             xEventGroupSetBits(ml->events, ML_EVT_COORD_REGISTERED);
@@ -2471,6 +2583,7 @@ void ml_coord_task(void *arg) {
             }
 
             state = COORD_LONG_POLL;
+            clear_control_error(ml);
             ml->state = ML_STATE_CONNECTED;
             reconnect_attempts = 0;
             last_activity_ms = ml_get_time_ms();

@@ -176,7 +176,7 @@ Failback check: attempting WiFi reconnection...
 
 ### WiFi Issues
 - **"WiFi connection failed"**: Check SSID/password in menuconfig
-- **"VPN connection timeout"**: Check Tailscale auth key is valid and not expired
+- **"VPN connection timeout"**: Check the web UI banner or `/api/status` control error fields. For auth-key errors, paste a valid `tskey-auth-` key in Device Settings, Save Settings, then Restart Device; alternatively set `CONFIG_ML_TAILSCALE_AUTH_KEY` at build time.
 
 ### Cellular Issues
 - **"AT communication failed"**: Check UART wiring (TX↔RX crossed correctly)

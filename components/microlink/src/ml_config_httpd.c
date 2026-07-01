@@ -38,6 +38,18 @@
 
 static const char *TAG = "ml_config";
 
+static const char *control_error_name(ml_control_error_t code) {
+    switch (code) {
+        case ML_CTRL_ERR_NONE: return "none";
+        case ML_CTRL_ERR_AUTH_KEY_INVALID: return "auth_key_invalid";
+        case ML_CTRL_ERR_NODE_NOT_FOUND: return "node_not_found";
+        case ML_CTRL_ERR_NON_JSON_RESPONSE: return "non_json_response";
+        case ML_CTRL_ERR_REGISTER_REJECTED: return "register_rejected";
+        case ML_CTRL_ERR_TRANSIENT: return "transient";
+        default: return "unknown";
+    }
+}
+
 /* Embedded HTML page */
 #include "ml_config_html.h"
 
@@ -407,6 +419,10 @@ static esp_err_t handler_status(httpd_req_t *req) {
         cJSON_AddStringToObject(json, "state", (s >= 0 && s <= 6) ? states[s] : "UNKNOWN");
         cJSON_AddNumberToObject(json, "peer_count", microlink_get_peer_count(ml));
         cJSON_AddStringToObject(json, "hostname", ml->config.device_name ? ml->config.device_name : "");
+        cJSON_AddStringToObject(json, "control_error", control_error_name(ml->control_error_code));
+        cJSON_AddStringToObject(json, "control_error_message", ml->control_error_message);
+        cJSON_AddStringToObject(json, "control_error_hint", ml->control_error_hint);
+        cJSON_AddNumberToObject(json, "control_error_since_ms", (double)ml->control_error_since_ms);
     }
 
     cJSON_AddNumberToObject(json, "free_heap", esp_get_free_heap_size());

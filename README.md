@@ -483,7 +483,7 @@ Enable `CONFIG_ML_ENABLE_CONFIG_HTTPD=y` in sdkconfig.defaults to get a web UI a
 | `/api/peers` | GET | List all tailnet peers |
 | `/api/peers/allowed` | GET/POST | Manage DISCO probe allowlist |
 | `/api/monitor` | GET | System health (temp, heap, RSSI, uptime) |
-| `/api/status` | GET | Connection state and VPN IP |
+| `/api/status` | GET | Connection state, VPN IP, and control-plane error details |
 | `/api/restart` | POST | Restart the device |
 
 **Device naming** — Set a prefix (e.g. `sensor`) to auto-generate `sensor-a1b2c3` from MAC, or set a full custom name. Tailscale creates the DNS entry: `your-name.your-tailnet.ts.net`.
@@ -656,7 +656,10 @@ Zero-copy mode contributed by [dj-oyu](https://github.com/dj-oyu/microlink).
 ## Troubleshooting
 
 ### Device not appearing in tailnet
-- Check auth key is valid and not expired
+- Check the web UI banner or `/api/status` fields `control_error`, `control_error_message`, and `control_error_hint`
+- For auth-key errors, paste a valid `tskey-auth-` key in the web interface under Device Settings, click Save Settings, then Restart Device
+- Alternatively set `CONFIG_ML_TAILSCALE_AUTH_KEY` at build time
+- Check auth key is valid, reusable or pre-authorized as needed, and not expired
 - Ensure WiFi is connected (or cellular registered)
 - Check coordination server connection in logs
 - Try a fresh auth key from https://login.tailscale.com/admin/settings/keys
